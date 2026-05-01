@@ -1,0 +1,19 @@
+config:
+  connection:
+    platform: vaas
+    credentials:
+      apiKey: "xXxxxXXX-xXxX-xXxX-xxxx-xXxxXXxxxXXx"
+certificateTasks:
+  - name: myCertificate
+    renewBefore: 10%
+    request:
+      zone: "NGINX vCert Test\\Default"
+      csr: local
+      subject:
+        commonName: '{{ Hostname | ToLower }}'
+    installations:
+    - format: PEM
+      afterInstallAction: "cat /etc/ssl/certs/cert.pem /etc/ssl/certs/nginx-vcert-chain.pem > /etc/ssl/certs/nginx-vcert-bundle.pem && systemctl restart nginx"
+      file: /etc/ssl/certs/cert.pem
+      chainFile: /etc/ssl/certs/nginx-vcert-chain.pem
+      keyFile: ../private/nginx-vcert.key
