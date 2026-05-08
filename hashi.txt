@@ -1,109 +1,237 @@
-Yes. Below is a clean installation process for deploying [HashiCorp Vault Community Edition](https://developer.hashicorp.com/vault?utm_source=chatgpt.com) on a fresh Ubuntu system.
+# Deploying HashiCorp Vault Community Edition on Ubuntu 24.04 with Active Directory LDAP Authentication
 
-This walkthrough will:
+This walkthrough will build a complete working lab deployment of:
 
-* Install Vault from HashiCorp’s official repository
-* Configure Vault as a systemd service
-* Use integrated Raft storage
-* Enable TLS-ready configuration structure
-* Initialize and unseal Vault
-* Verify web UI and CLI access
+* [HashiCorp Vault Community Edition](https://developer.hashicorp.com/vault?utm_source=chatgpt.com)
+* Integrated Raft storage
+* Systemd service
+* Web UI
+* Active Directory LDAP authentication
+* AD group-to-policy mapping
 
-This is appropriate for:
+This design fits very well into your existing:
 
-* Home lab
-* Development
-* PKI testing
-* Learning environments
-* Small internal deployments
-
-For production, you would later add:
-
-* Real TLS certificates
-* Auto-unseal (HSM/KMS)
-* Backup strategy
-* HA clustering
-* Audit logging
+* ADCS
+* Active Directory
+* PKI
+* Machine identity
+* Home lab environments
 
 ---
 
-# 1. Update Ubuntu
+# Target Environment
 
-Open a terminal:
+Example environment used below:
 
-```bash
+| Component            | Example               |
+| -------------------- | --------------------- |
+| Ubuntu Server        | vault1.clientbank.com |
+| Vault IP             | 10.0.25.240           |
+| AD Domain            | clientbank.com        |
+| Domain Controller    | dc1.clientbank.com    |
+| LDAP Service Account | svc_vault_ldap        |
+| Vault Admin AD Group | Vault-Admins          |
+
+Adjust values for your environment.
+
+---
+
+# 1. Fresh Ubuntu Preparation
+
+Open Terminal.
+
+Update the OS:
+
+```bash id="6m7ew6"
 sudo apt update && sudo apt upgrade -y
 ```
 
-Install utilities:
+Install required packages:
 
-```bash
-sudo apt install -y gpg curl wget unzip net-tools
+```bash id="twg7v0"
+sudo apt install -y \
+curl \
+wget \
+gpg \
+unzip \
+net-tools \
+ca-certificates \
+ldap-utils
 ```
 
 ---
 
-# 2. Add the HashiCorp Repository
+# 2. Set Hostname
 
-Import the GPG key:
+Set the server hostname:
 
-```bash
+```bash id="d3ul6h"
+sudo hostnamectl set-hostname vault1.clientbank.com
+```
+
+Update `/etc/hosts`:
+
+```bash id="yw8wp9"
+sudo nano /etc/hosts
+```
+
+Example:
+
+```text id="7g1u6o"
+127.0.0.1 localhost
+10.0.25.240 vault1.clientbank.com vault1
+```
+
+Verify:
+
+```bash id="tr3yzn"
+hostname -f
+```
+
+---
+
+# 3. Configure DNS
+
+Vault must resolve:
+
+* Domain Controllers
+* AD DNS names
+
+Edit Netplan:
+
+```bash id="ij7p6h"
+sudo nano /etc/netplan/50-cloud-init.yaml
+```
+
+Example:
+
+```yaml id="84wzc6"
+network:
+  version: 2
+  ethernets:
+    ens33:
+      dhcp4: false
+      addresses:
+        - 10.0.25.240/24
+      gateway4: 10.0.25.1
+      nameservers:
+        addresses:
+          - 10.0.25.10
+```
+
+Apply:
+
+```bash id="n6nchd"
+sudo netplan apply
+```
+
+Test DNS:
+
+```bash id="r82j1u"
+nslookup dc1.clientbank.com
+```
+
+---
+
+# 4. Join Ubuntu to Active Directory (Optional but Recommended)
+
+This is optional for Vault LDAP auth itself, but useful operationally.
+
+Install packages:
+
+```bash id="zrptt7"
+sudo apt install -y \
+realmd \
+sssd \
+sssd-tools \
+libnss-sss \
+libpam-sss \
+adcli \
+samba-common-bin \
+oddjob \
+oddjob-mkhomedir \
+packagekit
+```
+
+Discover the domain:
+
+```bash id="zx3mbk"
+realm discover clientbank.com
+```
+
+Join the domain:
+
+```bash id="3h5s9e"
+sudo realm join clientbank.com -U Administrator
+```
+
+Verify:
+
+```bash id="r2ebzj"
+realm list
+```
+
+Test AD login:
+
+```bash id="3gw44k"
+id administrator@clientbank.com
+```
+
+---
+
+# 5. Add HashiCorp Repository
+
+Import GPG key:
+
+```bash id="rzv9r2"
 wget -O- https://apt.releases.hashicorp.com/gpg | \
 gpg --dearmor | \
 sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null
 ```
 
-Add the repository:
+Add repository:
 
-```bash
+```bash id="79jbg7"
 echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
 https://apt.releases.hashicorp.com $(lsb_release -cs) main" | \
 sudo tee /etc/apt/sources.list.d/hashicorp.list
 ```
 
-Update package lists:
+Update:
 
-```bash
+```bash id="ol8wrv"
 sudo apt update
 ```
 
 ---
 
-# 3. Install Vault
+# 6. Install Vault
 
-Install the Community Edition package:
+Install:
 
-```bash
+```bash id="7lm0c6"
 sudo apt install vault -y
 ```
 
 Verify:
 
-```bash
+```bash id="pajyx8"
 vault version
-```
-
-You should see something similar to:
-
-```text
-Vault v1.x.x
 ```
 
 ---
 
-# 4. Create Vault Directories
+# 7. Create Vault Directories
 
-Create required directories:
-
-```bash
+```bash id="nvf7i5"
 sudo mkdir -p /opt/vault/data
 sudo mkdir -p /etc/vault.d
 sudo mkdir -p /var/log/vault
 ```
 
-Set permissions:
+Permissions:
 
-```bash
+```bash id="rlg57f"
 sudo chown -R vault:vault /opt/vault
 sudo chown -R vault:vault /var/log/vault
 sudo chmod 750 /opt/vault/data
@@ -111,24 +239,24 @@ sudo chmod 750 /opt/vault/data
 
 ---
 
-# 5. Create the Vault Configuration File
+# 8. Create Vault Configuration
 
-Create the main configuration:
+Create:
 
-```bash
+```bash id="u1g41d"
 sudo nano /etc/vault.d/vault.hcl
 ```
 
-Paste this configuration:
+Paste:
 
-```hcl
+```hcl id="5pb4cq"
 ui = true
 
 disable_mlock = true
 
 storage "raft" {
   path = "/opt/vault/data"
-  node_id = "vault-node1"
+  node_id = "vault1"
 }
 
 listener "tcp" {
@@ -136,305 +264,385 @@ listener "tcp" {
   tls_disable = 1
 }
 
-api_addr = "http://127.0.0.1:8200"
-cluster_addr = "http://127.0.0.1:8201"
+api_addr = "http://vault1.clientbank.com:8200"
+cluster_addr = "http://vault1.clientbank.com:8201"
 ```
 
-Save and exit.
+Save.
 
----
+Set permissions:
 
-# 6. Secure the Configuration File
-
-```bash
+```bash id="gvsav9"
 sudo chown vault:vault /etc/vault.d/vault.hcl
 sudo chmod 640 /etc/vault.d/vault.hcl
 ```
 
 ---
 
-# 7. Enable and Start Vault
+# 9. Start Vault
 
-Enable the service:
+Enable service:
 
-```bash
+```bash id="vr9wx8"
 sudo systemctl enable vault
 ```
 
-Start Vault:
+Start:
 
-```bash
+```bash id="t7p0ko"
 sudo systemctl start vault
 ```
 
-Check status:
+Check:
 
-```bash
+```bash id="w8q79j"
 sudo systemctl status vault
-```
-
-You should see:
-
-```text
-active (running)
 ```
 
 ---
 
-# 8. Configure the Vault CLI Environment Variable
+# 10. Configure CLI Environment
 
-Add the Vault address for your shell:
-
-```bash
+```bash id="d1k7q7"
 echo 'export VAULT_ADDR=http://127.0.0.1:8200' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-Verify connectivity:
+Check status:
 
-```bash
+```bash id="2f62wl"
 vault status
 ```
 
-At this stage, Vault should report:
+Expected:
 
-```text
+```text id="z5vchh"
 Initialized false
 Sealed true
 ```
 
 ---
 
-# 9. Initialize Vault
+# 11. Initialize Vault
 
-Initialize the Vault instance:
+Initialize:
 
-```bash
+```bash id="83sl7i"
 vault operator init
 ```
 
-You will receive:
+Save:
 
-* 5 unseal keys
-* 1 initial root token
+* Unseal keys
+* Root token
 
-Example:
-
-```text
-Unseal Key 1: xxxxx
-Unseal Key 2: xxxxx
-...
-Initial Root Token: hvs.xxxxx
-```
-
-IMPORTANT:
-
-* Save these securely
-* Losing them can permanently lock you out
-* Do not leave them in terminal history or screenshots
-
-For a lab:
-
-* Save to an encrypted password manager
-* Or an offline text file
+VERY IMPORTANT:
+Store them securely.
 
 ---
 
-# 10. Unseal Vault
+# 12. Unseal Vault
 
-Use 3 unseal keys:
+Run 3 times with 3 different keys:
 
-```bash
+```bash id="7o1cgw"
 vault operator unseal
 ```
 
-Paste key #1.
+Verify:
 
-Repeat:
-
-```bash
-vault operator unseal
-```
-
-Paste key #2.
-
-Repeat again with key #3.
-
-Check status:
-
-```bash
+```bash id="y3b73j"
 vault status
 ```
 
-Now you should see:
+Expected:
 
-```text
+```text id="5k9qdb"
 Sealed false
 ```
 
 ---
 
-# 11. Login to Vault
+# 13. Login to Vault
 
-Authenticate using the root token:
-
-```bash
+```bash id="fvlmcf"
 vault login
 ```
 
-Paste the root token.
+Paste root token.
 
 ---
 
-# 12. Access the Web UI
+# 14. Open Firewall (If Needed)
 
-Open a browser on the Ubuntu desktop:
+If using UFW:
 
-```text
-http://localhost:8200
+```bash id="t2kqvb"
+sudo ufw allow 8200/tcp
 ```
-
-Or remotely:
-
-```text
-http://<server-ip>:8200
-```
-
-Login using:
-
-* Token authentication
-* Root token
 
 ---
 
-# 13. Enable a Secrets Engine (Example)
+# 15. Access Vault Web UI
 
-Enable KV secrets:
+Open browser:
 
-```bash
+```text id="r8x3s8"
+http://vault1.clientbank.com:8200
+```
+
+---
+
+# 16. Create Active Directory Service Account
+
+In Active Directory create:
+
+| Object                 | Example        |
+| ---------------------- | -------------- |
+| User                   | svc_vault_ldap |
+| Password Never Expires | Yes            |
+| Interactive Login      | Disabled       |
+
+Recommended permissions:
+
+* Read-only directory access
+* No admin rights
+
+---
+
+# 17. Create Vault AD Security Group
+
+Create AD group:
+
+```text id="7qez4y"
+Vault-Admins
+```
+
+Add your admin user into the group.
+
+---
+
+# 18. Enable LDAP Authentication
+
+Enable LDAP auth in Vault:
+
+```bash id="plx4ec"
+vault auth enable ldap
+```
+
+---
+
+# 19. Configure Vault LDAP Authentication
+
+Run:
+
+```bash id="14jvct"
+vault write auth/ldap/config \
+url="ldaps://dc1.clientbank.com" \
+binddn="CN=svc_vault_ldap,CN=Users,DC=clientbank,DC=com" \
+bindpass='YourPasswordHere' \
+userdn="CN=Users,DC=clientbank,DC=com" \
+groupdn="CN=Users,DC=clientbank,DC=com" \
+userattr="sAMAccountName" \
+groupattr="cn" \
+certificate=@/etc/ssl/certs/clientbank-root-ca.pem \
+insecure_tls=false \
+starttls=false
+```
+
+---
+
+# 20. Import Your ADCS Root CA Certificate
+
+Export your Root CA certificate from ADCS.
+
+Copy to Ubuntu:
+
+```bash id="cgv8iz"
+sudo cp clientbank-root-ca.pem /usr/local/share/ca-certificates/
+```
+
+Update trust:
+
+```bash id="ag6m0h"
+sudo update-ca-certificates
+```
+
+Test LDAPS:
+
+```bash id="y93go7"
+openssl s_client -connect dc1.clientbank.com:636
+```
+
+You should see:
+
+* successful TLS negotiation
+* certificate chain
+
+---
+
+# 21. Create Vault Admin Policy
+
+Create policy file:
+
+```bash id="8mjlwm"
+nano admin-policy.hcl
+```
+
+Paste:
+
+```hcl id="6zjlwm"
+path "*" {
+  capabilities = ["create", "read", "update", "delete", "list", "sudo"]
+}
+```
+
+Load policy:
+
+```bash id="gnhymz"
+vault policy write admin admin-policy.hcl
+```
+
+---
+
+# 22. Map AD Group to Vault Policy
+
+Map AD group:
+
+```bash id="yfrvqk"
+vault write auth/ldap/groups/Vault-Admins policies=admin
+```
+
+---
+
+# 23. Test Active Directory Authentication
+
+Logout root token:
+
+```bash id="7c8lx8"
+vault token revoke -self
+```
+
+Login using AD:
+
+```bash id="u5q9s4"
+vault login -method=ldap username=yourusername
+```
+
+Vault prompts for:
+
+* AD password
+
+If successful:
+
+* You receive Vault token
+* Policies assigned from AD group
+
+---
+
+# 24. Enable KV Secrets Engine
+
+Enable secrets:
+
+```bash id="dg8n44"
 vault secrets enable -path=secret kv-v2
 ```
 
-Store a secret:
+Store secret:
 
-```bash
-vault kv put secret/test username=admin password=SuperSecret123
+```bash id="f9n77o"
+vault kv put secret/test username=test password=Password123
 ```
 
-Retrieve it:
+Retrieve:
 
-```bash
+```bash id="ibf4lw"
 vault kv get secret/test
 ```
 
 ---
 
-# 14. Recommended Next Steps
+# 25. Recommended Next Steps
 
-## Enable TLS
+You are now ready for:
 
-Right now Vault is running without encryption:
+## PKI Engine
 
-```hcl
+```bash id="c91j2x"
+vault secrets enable pki
+```
+
+Excellent for:
+
+* short-lived certs
+* dynamic certs
+* Kubernetes cert issuance
+* machine identity automation
+
+---
+
+## Enable TLS on Vault
+
+Right now:
+
+```hcl id="scjlwm"
 tls_disable = 1
 ```
 
-For anything beyond isolated lab usage:
+Eventually replace with:
 
-* Create a certificate
-* Enable HTTPS
-* Use proper DNS names
-
-You could later use:
-
-* Self-signed certs
-* Your ADCS lab
-* Venafi-managed certificates
-* Let’s Encrypt
+* ADCS-issued cert
+* proper DNS
+* HTTPS listener
 
 ---
 
 ## Enable Audit Logging
 
-Create an audit log:
-
-```bash
-sudo mkdir -p /var/log/vault_audit
-sudo chown vault:vault /var/log/vault_audit
-```
-
-Enable auditing:
-
-```bash
-vault audit enable file file_path=/var/log/vault_audit/audit.log
+```bash id="mn7uzr"
+vault audit enable file file_path=/var/log/vault_audit.log
 ```
 
 ---
 
-## Enable PKI Secrets Engine
-
-Vault is extremely useful as an internal CA.
-
-Enable PKI:
-
-```bash
-vault secrets enable pki
-```
-
-Tune TTL:
-
-```bash
-vault secrets tune -max-lease-ttl=87600h pki
-```
-
-This is where Vault becomes very useful for:
-
-* Dynamic certificates
-* Short-lived certificates
-* Lab PKI
-* Kubernetes identities
-* Machine identity automation
-
----
-
-# 15. Useful Service Commands
+# Useful Commands
 
 Restart Vault:
 
-```bash
+```bash id="vknmd7"
 sudo systemctl restart vault
 ```
 
 View logs:
 
-```bash
+```bash id="jlwm10"
 journalctl -u vault -f
 ```
 
-Stop Vault:
+Check LDAP config:
 
-```bash
-sudo systemctl stop vault
+```bash id="o9y5r0"
+vault read auth/ldap/config
 ```
 
 ---
 
-# 16. Recommended Production Improvements
+# Architecture Recommendation for Your Lab
 
-For a more enterprise-ready deployment later, consider:
+Given your environment, this becomes extremely powerful:
 
-* HTTPS/TLS listener
-* DNS hostname
-* Auto-unseal using HSM or KMS
-* Raft HA cluster
-* Dedicated non-root admin policies
-* LDAP or OIDC authentication
-* Backups/snapshots
-* Integrated PKI hierarchy
-* Monitoring with Prometheus
+```text id="u2kmly"
+Active Directory
+        |
+        | LDAPS
+        |
+HashiCorp Vault
+        |
+        +-- PKI Engine
+        +-- Dynamic Secrets
+        +-- SSH CA
+        +-- Kubernetes Auth
+        +-- Future Venafi integrations
+```
 
-HashiCorp documentation:
-
-* [Vault Installation Guide](https://developer.hashicorp.com/vault/docs/install?utm_source=chatgpt.com)
-* [Vault Raft Storage Documentation](https://developer.hashicorp.com/vault/docs/configuration/storage/raft?utm_source=chatgpt.com)
-* [Vault PKI Secrets Engine](https://developer.hashicorp.com/vault/docs/secrets/pki?utm_source=chatgpt.com)
+This aligns very closely with real enterprise machine identity environments.
